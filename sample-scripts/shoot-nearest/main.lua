@@ -4,11 +4,13 @@
 local keyutils = dofile("keyutils.lua");
 local hitutils = dofile("hitutils.lua");
 
--- 10ƒtƒŒ[ƒ€æ‚Ü‚Å—\‘ª‚µ‚½‚¢Š‘¶
-local predict_frame = 10;
+-- 14ï¿½tï¿½ï¿½ï¿½[ï¿½ï¿½ï¿½ï¿½Ü‚Å—\ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+local predict_frame = 14;
+local aim_frame = 6;
+local collision_cost = 1000;
 
 -- debug only
-local enable_time_logging = false; -- true‚É‚·‚é‚Æ–ˆƒtƒŒ[ƒ€‚ÌŒo‰ßŠÔ‚È‚Ç‚ÌƒƒO‚ğæ‚é
+local enable_time_logging = false; -- trueï¿½É‚ï¿½ï¿½ï¿½Æ–ï¿½ï¿½tï¿½ï¿½ï¿½[ï¿½ï¿½ï¿½ÌŒoï¿½ßï¿½ï¿½Ô‚È‚Ç‚Ìƒï¿½ï¿½Oï¿½ï¿½ï¿½ï¿½ï¿½
 local count = 0;
 local item_count = 0;
 local fp;
@@ -18,28 +20,32 @@ if (enable_time_logging) then
 end
 --
 
-local function findNearestEnemy(player, enemies)
+local function findTargetEnemy(player, enemies)
   local px = player.x;
-  local nearest_enemy = nil;
-  local nearest_distance = 9999;
+  local py = player.y;
+  local target_enemy = nil;
+  local best_score = 999999;
   for i,enemy in ipairs(enemies) do
-    -- ’¹—ì‚âƒ{ƒX‚Í“|‚µ‚Ã‚ç‚¢‚Ì‚Å–³‹‚µ‚Æ‚­BŠˆ«‰»Œã‚Ì’¹—ì‚Íã‚¢‚Ì‚Å“|‚µ‚É‚¢‚­B
-    if not(enemy.isSpirit or enemy.isBoss) or enemy.isActivatedSpirit then
-      local d = math.abs(enemy.x - px);
-      if d < nearest_distance then
-        nearest_distance = d;
-        nearest_enemy = enemy;
+    -- ï¿½ï¿½ï¿½ï¿½ï¿½{ï¿½Xï¿½Í“|ï¿½ï¿½ï¿½Ã‚ç‚¢ï¿½Ì‚Å–ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ‚ï¿½ï¿½Bï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì’ï¿½ï¿½ï¿½Íã‚¢ï¿½Ì‚Å“|ï¿½ï¿½ï¿½É‚ï¿½ï¿½ï¿½ï¿½B
+    -- pseudo enemyï¿½ÍŒï¿½ï¿½è“–ï¿½Ä‚Ì‘ÎÛ‚É‚ï¿½ï¿½È‚ï¿½
+    if (not enemy.isPseudoEnemy) and (not(enemy.isSpirit or enemy.isBoss) or enemy.isActivatedSpirit) then
+      local dx = math.abs(enemy.x - px);
+      local dy = math.abs(enemy.y - py);
+      local score = dx + dy * 0.2;
+      if score < best_score then
+        best_score = score;
+        target_enemy = enemy;
       end
     end
   end
-  return nearest_enemy;
+  return target_enemy;
 end
 
-local function positionCost(player, dx, dy, nearest_enemy)
+local function positionCost(player, dx, dy, target_enemy)
   local cost = 0;
   local cx, cy = 0, 300;
-  if nearest_enemy then
-    cx = nearest_enemy.x;
+  if target_enemy then
+    cx = target_enemy.x;
   end
   if (cx - player.x) * dx <= 0 then
     cost = cost + 0.0001;
@@ -50,26 +56,47 @@ local function positionCost(player, dx, dy, nearest_enemy)
   return cost;
 end
 
--- ƒL[‘€ì‚ÌŒó•âBã‰º¶‰EˆÚ“®‚Æ’â~‚Ì‚İB¡‰ñÎ‚ßˆÚ“®‚â’á‘¬ˆÚ“®‚Íˆµ‚í‚È‚¢
-local function generateCandidates(player, nearest_enemy)
+-- ï¿½Lï¿½[ï¿½ï¿½ï¿½ï¿½ÌŒï¿½ï¿½Bï¿½ã‰ºï¿½ï¿½ï¿½Eï¿½Ú“ï¿½ï¿½ÆÎŠpï¿½Ú“ï¿½ï¿½Aï¿½á‚¢ï¿½Ú“ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ß‚ï¿½
+local function generateCandidates(player, target_enemy)
   local candidates = {};
-  local keys = { "up", "right", "down", "left"};
-  local dx = { 0, 1, 0, -1 };
-  local dy = { -1, 0, 1, 0 };
   local speed_fast = player.speedFast;
+  local speed_slow = player.speedSlow;
+  local diag = 0.70710678;
+  local directions = {
+    { keys={"up"},             dx= 0,         dy=-1,        speed=speed_fast, use_shift=false },
+    { keys={"right"},          dx= 1,         dy= 0,        speed=speed_fast, use_shift=false },
+    { keys={"down"},           dx= 0,         dy= 1,        speed=speed_fast, use_shift=false },
+    { keys={"left"},           dx=-1,         dy= 0,        speed=speed_fast, use_shift=false },
+    { keys={"up", "right"},    dx= diag,      dy=-diag,     speed=speed_fast, use_shift=false },
+    { keys={"down", "right"},  dx= diag,      dy= diag,     speed=speed_fast, use_shift=false },
+    { keys={"down", "left"},   dx=-diag,      dy= diag,     speed=speed_fast, use_shift=false },
+    { keys={"up", "left"},     dx=-diag,      dy=-diag,     speed=speed_fast, use_shift=false },
+    { keys={"up"},             dx= 0,         dy=-1,        speed=speed_slow, use_shift=true },
+    { keys={"right"},          dx= 1,         dy= 0,        speed=speed_slow, use_shift=true },
+    { keys={"down"},           dx= 0,         dy= 1,        speed=speed_slow, use_shift=true },
+    { keys={"left"},           dx=-1,         dy= 0,        speed=speed_slow, use_shift=true },
+    { keys={"up", "right"},    dx= diag,      dy=-diag,     speed=speed_slow, use_shift=true },
+    { keys={"down", "right"},  dx= diag,      dy= diag,     speed=speed_slow, use_shift=true },
+    { keys={"down", "left"},   dx=-diag,      dy= diag,     speed=speed_slow, use_shift=true },
+    { keys={"up", "left"},     dx=-diag,      dy=-diag,     speed=speed_slow, use_shift=true },
+  };
   -- stop
   table.insert(candidates, {
     vx=0,
     vy=0,
     keys={},
-    cost=positionCost(player, 0, 0, nearest_enemy)
+    cost=positionCost(player, 0, 0, target_enemy)
   });
-  for i=1,4 do
+  for i,dir in ipairs(directions) do
+    local keys = hitutils.copy(dir.keys);
+    if dir.use_shift then
+      table.insert(keys, "shift");
+    end
     table.insert(candidates, {
-      vx= dx[i] * speed_fast,
-      vy= dy[i] * speed_fast,
-      keys={keys[i]},
-      cost=positionCost(player, dx[i], dy[i], nearest_enemy)
+      vx= dir.dx * dir.speed,
+      vy= dir.dy * dir.speed,
+      keys=keys,
+      cost=positionCost(player, dir.dx, dir.dy, target_enemy)
     });
   end
   return candidates;
@@ -80,7 +107,7 @@ local function choice(candidates)
   return candidates[1].keys;
 end
 
--- ‰æ–ÊŠO‚Éo‚È‚¢‚æ‚¤‚ÉÀ•W‚ğ•â³
+-- ï¿½ï¿½ÊŠOï¿½Éoï¿½È‚ï¿½ï¿½æ‚¤ï¿½Éï¿½ï¿½Wï¿½ï¿½â³
 local function adjustX(x)
   if x < -136 then
     return -136;
@@ -109,8 +136,8 @@ function calculateHitCost(player, elements, hit_body_for_filter_circle, hit_body
     if hit_body and (hitTest(hit_body_for_filter_circle, hit_body) or hitTest(hit_body_for_filter_rect, hit_body)) then
       local ex = elm.x;
       local ey = elm.y;
-      local evx = elm.vx;
-      local evy = elm.vy;
+      local evx = elm.vx or 0;
+      local evy = elm.vy or 0;
       for frame=1,predict_frame do
         hit_body.x = ex + evx * frame;
         hit_body.y = ey + evy * frame;
@@ -121,7 +148,7 @@ function calculateHitCost(player, elements, hit_body_for_filter_circle, hit_body
           player_hit_body_circle.x = adjustX(px + c.vx * frame);
           player_hit_body_circle.y = adjustY(py + c.vy * frame);
           if hittest_func(player, elm) then
-            c.cost = c.cost + 0.5 ^ frame;
+            c.cost = c.cost + collision_cost * (0.82 ^ (frame - 1));
           end
         end
       end
@@ -137,15 +164,26 @@ local shoot_sequence = coroutine.wrap(function()
 end);
 
 local function shouldShoot(player, nearest_enemy)
-  -- “G‚Æ©‹@‚ÌXÀ•W‚Ì‚¸‚ê‚ª16pxˆÈ“à‚È‚çŒ‚‚Ä‚Î“–‚½‚é‹C‚ª‚·‚é
+  -- ï¿½Gï¿½Æï¿½ï¿½@ï¿½ï¿½Xï¿½ï¿½ï¿½Wï¿½Ì‚ï¿½ï¿½ê‚ª16pxï¿½È“ï¿½ï¿½È‚çŒ‚ï¿½Ä‚Î“ï¿½ï¿½ï¿½ï¿½ï¿½Cï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
   if nearest_enemy and (player.x - nearest_enemy.x)^2 < 16^2 then
-    if player.spellPoint > 500000 then -- ƒ|ƒCƒ“ƒgØ‚Á‚Æ‚«‚Ü‚·‚Ë
+    if player.spellPoint > 500000 then -- ï¿½|ï¿½Cï¿½ï¿½ï¿½gï¿½Ø‚ï¿½ï¿½Æ‚ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½
       return false;
     else
       return shoot_sequence();
     end
   end
   return false;
+end
+
+local function addAimCost(player, target_enemy, candidates)
+  if not target_enemy then
+    return;
+  end
+  local target_future_x = target_enemy.x + (target_enemy.vx or 0) * aim_frame;
+  for i,c in ipairs(candidates) do
+    local player_future_x = adjustX(player.x + c.vx * aim_frame);
+    c.cost = c.cost + math.abs(target_future_x - player_future_x) * 0.01;
+  end
 end
 
 function main ()
@@ -159,11 +197,11 @@ function main ()
 
   local my_side = game_sides[player_side];
   local player = my_side.player;
-  local nearest_enemy = findNearestEnemy(player, my_side.enemies);
+  local nearest_enemy = findTargetEnemy(player, my_side.enemies);
 
   -- generate candidates
   local candidates = generateCandidates(player, nearest_enemy);
-  -- —\‘ª‚·‚é’e‚â“G‚ği‚é‚½‚ß‚Ì“–‚½‚è”»’èB‚±‚Ì“–‚½‚è”»’è‚ÆÕ“Ë‚µ‚È‚¢‚à‚Ì‚É‚Â‚¢‚Ä‚Í‹““®—\‘ª‚ğs‚í‚È‚¢
+  -- ï¿½\ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½eï¿½ï¿½Gï¿½ï¿½ï¿½iï¿½é‚½ï¿½ß‚Ì“ï¿½ï¿½ï¿½ï¿½è”»ï¿½ï¿½Bï¿½ï¿½ï¿½Ì“ï¿½ï¿½ï¿½ï¿½è”»ï¿½ï¿½ÆÕ“Ë‚ï¿½ï¿½È‚ï¿½ï¿½ï¿½ï¿½Ì‚É‚Â‚ï¿½ï¿½Ä‚Í‹ï¿½ï¿½ï¿½ï¿½\ï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½È‚ï¿½
   local hit_body_for_filter_circle = hitutils.copy(player.hitBodyCircle,fp);
   hit_body_for_filter_circle.radius = 50;
   local hit_body_for_filter_rect = hitutils.copy(player.hitBodyRect,fp);
@@ -191,10 +229,11 @@ function main ()
     hit_body_for_filter_rect,
     candidates,
     hitutils.playerVsExAttack);
+  addAimCost(player, nearest_enemy, candidates);
   -- choice
   local keys_to_send = choice(candidates);
   if shouldShoot(player, nearest_enemy) then
-    -- ”j‰ó“I‚É‘‚«Š·‚¦‚Ä‚¢‚é‚ªA‚Ç‚¤‚ºgenerateCandidates‚Å–ˆƒtƒŒ[ƒ€¶¬‚µ‚Ä‚é‚à‚Ì‚È‚Ì‚ÅOK
+    -- ï¿½jï¿½ï¿½Iï¿½Éï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½é‚ªï¿½Aï¿½Ç‚ï¿½ï¿½ï¿½generateCandidatesï¿½Å–ï¿½ï¿½tï¿½ï¿½ï¿½[ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½Ì‚È‚Ì‚ï¿½OK
     table.insert(keys_to_send, "z");
   end
 
@@ -210,4 +249,3 @@ function main ()
     fp:write(tostring(time_end - time_start)..","..tostring(count)..","..tostring(item_count).."\n");
   end
 end
-
